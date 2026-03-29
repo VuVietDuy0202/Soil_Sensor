@@ -248,7 +248,7 @@ void setup()
 {
 
   Serial.begin(115200);
-  Serial.println("Starting...");
+  Serial.println("Starting... DUY_VIPRO");
 
   const esp_partition_t *running = esp_ota_get_running_partition();
   if (running)
