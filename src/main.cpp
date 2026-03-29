@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include <BleSerial.h>
+#include <BleSerialServer.h>
 #include "esp_partition.h"
+#include "ble_ota.h"
+
 #define DEBUG
 #define RXD_RO 5
 #define TXD_DI 6
@@ -9,6 +12,7 @@
 HardwareSerial modbus(1);
 BleSerial ble;
 bool isConnected;
+TaskHandle_t bleTaskHandle = NULL;
 
 // ================= CRC =================
 uint16_t modbusCRC(uint8_t *buf, int len)
@@ -245,6 +249,11 @@ void setup()
 
   Serial.begin(115200);
   Serial.println("Starting...");
+
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  if (running)
+    Serial.printf("[BOOT] Running from: %s (addr=0x%06X)\n", running->label, running->address);
+
   modbus.begin(4800, SERIAL_8N1, RXD_RO, TXD_DI);
   Serial.println("Modbus setup done");
   pinMode(RS485_EN, OUTPUT);
@@ -255,14 +264,19 @@ void setup()
   Serial.println("BLE setup done");
   ble.setConnectCallback([](bool connected)
                          { isConnected = connected; });
+
   xTaskCreatePinnedToCore(
       _bleTask,
       "BleTask",
       9216,
       NULL,
       1,
-      NULL,
+      &bleTaskHandle,
       PRO_CPU_NUM);
+
+  // Setup BLE OTA service (after task created so we can pass handle)
+  setupOtaService(BleSerialServer::getInstance().Server, bleTaskHandle);
+
   Serial.println("Setup done");
   printPartitions();
 }

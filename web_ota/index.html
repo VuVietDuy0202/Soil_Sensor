@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BLE OTA - AgriBeacon Soil</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .container {
+      background: #16213e;
+      border-radius: 16px;
+      padding: 32px;
+      width: 420px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
+    h1 {
+      text-align: center;
+      font-size: 20px;
+      margin-bottom: 24px;
+      color: #0f9b58;
+    }
+    .status-bar {
+      background: #0a0f1e;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      font-size: 14px;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #555;
+      flex-shrink: 0;
+    }
+    .dot.connected { background: #0f9b58; }
+    .dot.error { background: #e74c3c; }
+    .dot.updating { background: #f39c12; animation: pulse 1s infinite; }
+    @keyframes pulse { 50% { opacity: 0.4; } }
+
+    .btn {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-bottom: 12px;
+      transition: all 0.2s;
+    }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-connect { background: #0f9b58; color: #fff; }
+    .btn-connect:hover:not(:disabled) { background: #0d8a4e; }
+    .btn-disconnect { background: #e74c3c; color: #fff; }
+    .btn-disconnect:hover:not(:disabled) { background: #c0392b; }
+
+    .file-area {
+      border: 2px dashed #333;
+      border-radius: 8px;
+      padding: 24px;
+      text-align: center;
+      margin-bottom: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .file-area:hover { border-color: #0f9b58; }
+    .file-area.has-file { border-color: #0f9b58; background: rgba(15,155,88,0.1); }
+    .file-area input { display: none; }
+    .file-info { font-size: 13px; color: #888; margin-top: 8px; }
+
+    .btn-update { background: #2980b9; color: #fff; }
+    .btn-update:hover:not(:disabled) { background: #2472a4; }
+    .btn-cancel { background: #e67e22; color: #fff; }
+    .btn-cancel:hover:not(:disabled) { background: #cf6d17; }
+
+    .progress-wrap {
+      background: #0a0f1e;
+      border-radius: 8px;
+      height: 32px;
+      overflow: hidden;
+      margin-bottom: 12px;
+      display: none;
+    }
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #0f9b58, #2ecc71);
+      width: 0%;
+      transition: width 0.3s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 600;
+      min-width: 40px;
+    }
+
+    .log {
+      background: #0a0f1e;
+      border-radius: 8px;
+      padding: 12px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+      margin-top: 16px;
+      line-height: 1.6;
+    }
+    .log .info { color: #3498db; }
+    .log .ok { color: #0f9b58; }
+    .log .err { color: #e74c3c; }
+    .log .warn { color: #f39c12; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>BLE OTA Update</h1>
+
+    <div class="status-bar">
+      <div class="dot" id="dot"></div>
+      <span id="statusText">Chua ket noi</span>
+    </div>
+
+    <button class="btn btn-connect" id="btnConnect" onclick="connectBLE()">Ket noi BLE</button>
+    <button class="btn btn-disconnect" id="btnDisconnect" onclick="disconnectBLE()" style="display:none">Ngat ket noi</button>
+
+    <div class="file-area" id="fileArea" onclick="document.getElementById('fileInput').click()">
+      <div>Keo file .bin vao day hoac bam de chon</div>
+      <div class="file-info" id="fileInfo"></div>
+      <input type="file" id="fileInput" accept=".bin" onchange="handleFile(this)">
+    </div>
+
+    <div class="progress-wrap" id="progressWrap">
+      <div class="progress-bar" id="progressBar">0%</div>
+    </div>
+
+    <button class="btn btn-update" id="btnUpdate" onclick="startOTA()" disabled>Update Firmware</button>
+    <button class="btn btn-cancel" id="btnCancel" onclick="cancelOTA()" style="display:none">Huy OTA</button>
+
+    <div class="log" id="log"></div>
+  </div>
+
+<script>
+const OTA_SERVICE   = 'fb1e4001-54ae-4a28-9f74-dfccb248601d';
+const OTA_CONTROL   = 'fb1e4002-54ae-4a28-9f74-dfccb248601d';
+const OTA_DATA      = 'fb1e4003-54ae-4a28-9f74-dfccb248601d';
+
+const CMD_START = 0x01;
+const CMD_STOP  = 0x02;
+const CMD_DONE  = 0x03;
+
+const STATUS_OK       = 0x00;
+const STATUS_READY    = 0x01;
+const STATUS_PROGRESS = 0x02;
+const STATUS_DONE     = 0x03;
+const STATUS_ERROR    = 0xFF;
+
+const CHUNK_SIZE = 512;
+
+let device = null;
+let server = null;
+let controlChar = null;
+let dataChar = null;
+let firmware = null;
+let otaRunning = false;
+let otaDone = false;
+
+// --- UI ---
+const $ = id => document.getElementById(id);
+
+function setStatus(text, state) {
+  $('statusText').textContent = text;
+  $('dot').className = 'dot ' + (state || '');
+}
+
+function log(msg, cls = 'info') {
+  const el = $('log');
+  const time = new Date().toLocaleTimeString('vi-VN');
+  el.innerHTML += `<div class="${cls}">[${time}] ${msg}</div>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function setProgress(pct) {
+  $('progressWrap').style.display = 'block';
+  $('progressBar').style.width = pct + '%';
+  $('progressBar').textContent = pct + '%';
+}
+
+function showConnected(connected) {
+  $('btnConnect').style.display = connected ? 'none' : 'block';
+  $('btnDisconnect').style.display = connected ? 'block' : 'none';
+  $('btnUpdate').disabled = !(connected && firmware);
+}
+
+function showOTA(running) {
+  $('btnUpdate').style.display = running ? 'none' : 'block';
+  $('btnCancel').style.display = running ? 'block' : 'none';
+  $('btnDisconnect').disabled = running;
+}
+
+// --- Drag & Drop ---
+const fileArea = $('fileArea');
+fileArea.addEventListener('dragover', e => { e.preventDefault(); fileArea.style.borderColor = '#0f9b58'; });
+fileArea.addEventListener('dragleave', () => { fileArea.style.borderColor = firmware ? '#0f9b58' : '#333'; });
+fileArea.addEventListener('drop', e => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file && file.name.endsWith('.bin')) loadFile(file);
+  else log('Chi chap nhan file .bin', 'err');
+});
+
+function handleFile(input) {
+  if (input.files[0]) loadFile(input.files[0]);
+}
+
+function loadFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    firmware = new Uint8Array(e.target.result);
+    $('fileInfo').textContent = `${file.name} (${(firmware.length / 1024).toFixed(1)} KB)`;
+    fileArea.classList.add('has-file');
+    $('btnUpdate').disabled = !server;
+    log(`File: ${file.name}, size: ${firmware.length} bytes`, 'ok');
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// --- BLE ---
+async function connectBLE() {
+  if (!navigator.bluetooth) {
+    log('Trinh duyet khong ho tro Web Bluetooth!', 'err');
+    log('Can chay tren Chrome + HTTPS hoac localhost', 'warn');
+    log('Thu: python3 -m http.server 8080 roi mo http://localhost:8080', 'warn');
+    setStatus('Trinh duyet khong ho tro BLE', 'error');
+    return;
+  }
+  try {
+    log('Dang quet thiet bi BLE...');
+    device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [OTA_SERVICE]
+    });
+
+    device.addEventListener('gattserverdisconnected', () => {
+      showConnected(false);
+      showOTA(false);
+      server = null;
+      controlChar = null;
+      dataChar = null;
+      otaRunning = false;
+      if (otaDone) {
+        setStatus('OTA thanh cong! Thiet bi dang khoi dong lai', 'connected');
+        log('Thiet bi khoi dong lai voi firmware moi', 'ok');
+      } else {
+        setStatus('Mat ket noi', 'error');
+        log('Thiet bi mat ket noi', 'warn');
+      }
+    });
+
+    log('Dang ket noi...');
+    server = await device.gatt.connect();
+
+    log('Tim OTA service...');
+    const service = await server.getPrimaryService(OTA_SERVICE);
+    controlChar = await service.getCharacteristic(OTA_CONTROL);
+    dataChar = await service.getCharacteristic(OTA_DATA);
+
+    // Subscribe notify
+    await controlChar.startNotifications();
+    controlChar.addEventListener('characteristicvaluechanged', onControlNotify);
+
+    setStatus(`Da ket noi: ${device.name}`, 'connected');
+    showConnected(true);
+    log(`Ket noi thanh cong: ${device.name}`, 'ok');
+  } catch (err) {
+    log(`Loi ket noi: ${err.message}`, 'err');
+    setStatus('Ket noi that bai', 'error');
+  }
+}
+
+function disconnectBLE() {
+  if (device && device.gatt.connected) {
+    device.gatt.disconnect();
+  }
+}
+
+// --- OTA Notify Handler ---
+let otaResolve = null;
+
+function onControlNotify(event) {
+  const val = new Uint8Array(event.target.value.buffer);
+  const status = val[0];
+  const extra = val.length > 1 ? val[1] : 0;
+
+  if (status === STATUS_READY) {
+    log('ESP32 san sang nhan firmware', 'ok');
+    if (otaResolve) { otaResolve('ready'); otaResolve = null; }
+  } else if (status === STATUS_PROGRESS) {
+    log(`ESP32 ghi flash: ${extra}%`, 'info');
+    setProgress(extra);
+  } else if (status === STATUS_DONE) {
+    setProgress(100);
+    otaDone = true;
+    setStatus('OTA thanh cong! Thiet bi dang khoi dong lai...', 'connected');
+    log('OTA thanh cong! Thiet bi se khoi dong lai...', 'ok');
+    if (otaResolve) { otaResolve('done'); otaResolve = null; }
+  } else if (status === STATUS_OK) {
+    if (otaResolve) { otaResolve('ok'); otaResolve = null; }
+  } else if (status === STATUS_ERROR) {
+    log('ESP32 bao loi!', 'err');
+    otaRunning = false;
+    showOTA(false);
+    setStatus('OTA that bai', 'error');
+    if (otaResolve) { otaResolve('error'); otaResolve = null; }
+  }
+}
+
+function waitNotify(timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    otaResolve = resolve;
+    setTimeout(() => { otaResolve = null; reject(new Error('Timeout cho phan hoi')); }, timeoutMs);
+  });
+}
+
+// --- OTA Process ---
+async function startOTA() {
+  if (!firmware || !controlChar || !dataChar) return;
+
+  try {
+    otaRunning = true;
+    otaDone = false;
+    showOTA(true);
+    setStatus('Dang update firmware...', 'updating');
+    setProgress(0);
+
+    // Send START + firmware size (little-endian)
+    const size = firmware.length;
+    const startCmd = new Uint8Array([
+      CMD_START,
+      size & 0xFF,
+      (size >> 8) & 0xFF,
+      (size >> 16) & 0xFF,
+      (size >> 24) & 0xFF
+    ]);
+
+    log(`Gui START, size=${size} bytes`);
+    await controlChar.writeValue(startCmd);
+
+    const resp = await waitNotify(5000);
+    if (resp !== 'ready') throw new Error('ESP32 khong san sang');
+
+    // Send chunks
+    const totalChunks = Math.ceil(size / CHUNK_SIZE);
+    log(`Gui ${totalChunks} chunks (${CHUNK_SIZE} bytes/chunk)`);
+
+    for (let i = 0; i < size && otaRunning; i += CHUNK_SIZE) {
+      const chunk = firmware.slice(i, Math.min(i + CHUNK_SIZE, size));
+      await dataChar.writeValueWithoutResponse(chunk);
+    }
+
+    if (!otaRunning) return;
+
+    log('Da gui het firmware. Cho ESP32 ghi flash va verify...');
+    setStatus('ESP32 dang ghi flash...', 'updating');
+
+    // Wait for ESP32 to notify DONE (auto finalize when all data received)
+    try { await waitNotify(120000); } catch(e) { /* disconnect expected after reboot */ }
+  } catch (err) {
+    if (otaDone) {
+      setProgress(100);
+      setStatus('OTA thanh cong! Thiet bi dang khoi dong lai...', 'connected');
+      log('OTA thanh cong!', 'ok');
+    } else {
+      log(`Loi OTA: ${err.message}`, 'err');
+      setStatus('OTA that bai', 'error');
+    }
+  } finally {
+    otaRunning = false;
+    showOTA(false);
+  }
+}
+
+async function cancelOTA() {
+  otaRunning = false;
+  try {
+    await controlChar.writeValue(new Uint8Array([CMD_STOP]));
+    log('Da gui lenh huy OTA', 'warn');
+  } catch (err) {
+    log(`Loi huy: ${err.message}`, 'err');
+  }
+  setStatus('Da huy OTA', 'error');
+  showOTA(false);
+  $('progressWrap').style.display = 'none';
+}
+</script>
+</body>
+</html>
